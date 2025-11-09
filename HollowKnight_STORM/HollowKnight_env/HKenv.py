@@ -6,50 +6,134 @@ import cv2
 import keyboard
 
 import os
+import numpy as np
+
+from mod_event_class import ModEventClient
+from env_wrapper import LifeLossInfo
 
 class HKEnv(gym.Env):
     def __init__(self):
-        # 初始化时就找到窗口和创建摄像头，避免重复创建
+        
         self.window = None
         self.camera = None
 
         # 菜单阈值
-        self.menu_threshold = 0.4
+        self.menu_threshold = 0.43
         self.white_pixel_threshold = 500000
+
+        self.gap = 1.0 / 10
+        self._prev_time = None
+
+        self.KEYMAP = {
+            0: ('a', 'move_left', 'hold'),      # 按住左
+            1: ('d', 'move_right', 'hold'),     # 按住右
+            2: ('w', 'look_up', 'hold'),        # 按住上（向上看）
+            3: ('s', 'look_down', 'hold'),     # 按住下（向下看）
+            4: ('j', 'attack', 'instant'),     # 攻击（瞬时动作）
+            5: ('k', 'dash', 'instant'),        # 冲刺（瞬时动作）
+            6: ('space', 'jump', 'hold'),       # 跳跃（按住）
+        }
+        self.action_keys = [self.KEYMAP[i][0] for i in range(len(self.KEYMAP))]
+        self.num_actions = len(self.action_keys)
+        self.instant_keys = {4, 5}
+        self._key_states = np.zeros(self.num_actions, dtype=np.int8)
+
+        # 定义动作空间
+        self.action_space = gym.spaces.MultiBinary(self.num_actions)
+
+        self.lives_info = None
+
         self._setup_windows()
 
-    
+        # 定义观测空间
+        H, W = self.window.height, self.window.width
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(H, W, 3), dtype=np.uint8)
 
-    def reset(self):
+        self.mod_event_client = ModEventClient()
+
+    def reset(self, seed=None, options=None):
         """重置环境，重新进入boss房间"""
-        # 清理之前的状态
+        super().reset(seed=seed)
+
+        # 清理按键
         self._cleanup_keys()
         
         # 重新进入boss房间
         self._enter_boss_room()
 
-        # 获取初始观测
+        self._prev_time = time.time()
+
+        self.mod_event_client.reset(last_check_time=self._prev_time)
+        
         obs = self._get_latest_frame()
-        return obs  # gymnasium 格式
+        # info["life_loss"] = False
+        self.lives_info = 9
+        info = {}
+        info["lives"] = self.lives_info
+        return obs, info  
     
 
 
     def step(self, action):
-        pass
+
+
+        self._execute_actions(action)
+        # 控制采样频率
+        if self._prev_time is not None:
+            elapsed = time.time() - self._prev_time
+            sleep_time = self.gap - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+        self._prev_time = time.time()
+
+        current_time = self._prev_time
+        print(f"current_time: {current_time}")
+        events = self.mod_event_client.get_events_since_last_check(current_time=current_time)
+
+        reward = 0.0
+        terminated = False
+        info = {}
+
+        if events["hits"]:
+            reward += 1
+            print(f"hits: {events['hits']}")
+            print(f"hit the boss, damage this time: {reward}")
+
+        if events["damages"]:
+            print(f"damages: {events['damages']}")
+            total_damage = sum(event["damage"] for event in events["damages"])
+            self.lives_info -= total_damage
+            if self.lives_info < 0:
+                self.lives_info = 0
+            print(f"got damaged, damage this time: {total_damage}, lives: {self.lives_info}")
+            
+        info["lives"] = self.lives_info
+
+        if self.lives_info == 0:
+            terminated = True
+                
+        obs = self._get_latest_frame()
+
+        if terminated:
+            self._wait_for_loading()
+        
+        
+        truncated = False
+        return obs, reward, terminated, truncated, info
 
     def _setup_windows(self):
         """初始化窗口和摄像头"""
         # 查找空洞骑士窗口
         windows = gw.getWindowsWithTitle("Hollow Knight")
         self.window = windows[0]
+        self.window.activate()
+        time.sleep(0.1)
 
         self.camera = dxcam.create(output_idx=0)
-        self.window.activate()
+        
     
     def _get_latest_frame(self):
         """获取最新帧"""
-
-        # self.window.activate()
 
         screen_width = self.camera.width
         screen_height = self.camera.height
@@ -59,8 +143,15 @@ class HKEnv(gym.Env):
         bottom = min(screen_height, self.window.top + self.window.height)
         
         region = (left, top, right, bottom)
-        
-        frame = self.camera.grab(region=region)                    
+
+        for attempt in range(5):
+            frame = self.camera.grab(region=region)
+            if frame is not None:
+                break
+            time.sleep(0.01)
+            self.window.activate()
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         return frame
 
     def _enter_boss_room(self):
@@ -78,7 +169,7 @@ class HKEnv(gym.Env):
             # 检查是否到达了挑战界面
             frame = self._get_latest_frame()
             if self._is_challenge_menu(frame):
-                print("✅ 找到挑战菜单")
+                print("找到挑战菜单")
                 break
             else:
                 print("未能找到挑战菜单，继续尝试...")
@@ -95,9 +186,7 @@ class HKEnv(gym.Env):
     
     def _is_challenge_menu(self, frame, visualize=False):
 
-
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # 可以只截取右上角区域来提速（菜单位置固定）
         h, w = gray.shape
@@ -111,7 +200,7 @@ class HKEnv(gym.Env):
         # 匹配判断
         res = cv2.matchTemplate(roi, template_gray, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        # print(f"max_val: {max_val}")
+        print(f"max_val: {max_val}")
 
         # 调试用
         if visualize:
@@ -125,7 +214,7 @@ class HKEnv(gym.Env):
     
     def _wait_for_loading(self):
         """等待游戏加载完成"""
-        print("等待加载完成...")
+        print("等待加载...")
         ready = False
         
         while True:
@@ -134,7 +223,7 @@ class HKEnv(gym.Env):
                 continue
                 
             # 检测是否在加载界面
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             # print(f"num of gray > 250: {(gray > 250).sum()}")
 
             # 判断白屏像素数量
@@ -151,11 +240,33 @@ class HKEnv(gym.Env):
         time.sleep(2.0)
         print("加载完成")
 
+    def _execute_actions(self, action):
+        """执行动作"""
+        action = np.array(action, dtype=np.int8).flatten()
+
+        for i in range(self.num_actions):
+            key_name, _, _ = self.KEYMAP[i]
+            new_state = action[i]
+            old_state = self._key_states[i]
+            
+            if i in self.instant_keys:
+                if new_state == 1:
+                    keyboard.send(key_name)
+            else:
+                if new_state == 1 and old_state == 0:
+                    keyboard.press(key_name)
+                elif new_state == 0 and old_state == 1:
+                    keyboard.release(key_name)
+
+        self._key_states = action.copy()
+
     def _cleanup_keys(self):
         """清理可能按住的按键"""
         keys_to_release = ['a', 'd', 'w', 's', 'j', 'k', 'space']
         for key in keys_to_release:
             keyboard.release(key)
+
+        self._key_states = np.zeros(self.num_actions, dtype=np.int8)
     
     def _cleanup(self):
         """清理camera"""
@@ -170,12 +281,25 @@ class HKEnv(gym.Env):
         frame = self._get_latest_frame()
         value = self._is_challenge_menu(frame, visualize=False)
         if value:
-            print("✅ 找到挑战菜单")
+            print("找到挑战菜单")
         else:
-            print("❌ 未找到挑战菜单", value)
+            print("未找到挑战菜单", value)
 
 if __name__ == "__main__":
     env = HKEnv()
-    env.reset()
-
-    # keyboard.send('space')
+    env = gym.wrappers.ResizeObservation(env, shape = (64, 64))
+    env = LifeLossInfo(env)
+    episode =5
+    for i in range(episode):
+        obs, info = env.reset()
+        while True:
+            action = env.action_space.sample()
+            obs, reward, terminated, truncated, info = env.step(action)
+            if terminated:
+                print(f"episode {i} terminated")
+                break
+            if truncated:
+                break
+        print(f"episode {i} finished")
+    # env.reset()
+    # env._is_challenge_menu(env._get_latest_frame())
