@@ -1,15 +1,17 @@
-from cv2.cuda import Event_DEFAULT
 import gymnasium as gym
 import pygetwindow as gw
 import dxcam
 import time
 import cv2
 import keyboard
-
+import sys
 import os
 import numpy as np
+_parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
 
-from mod_event_class import ModEventClient
+from .mod_event_class import ModEventClient
 from env_wrapper import LifeLossInfo
 
 class HKEnv(gym.Env):
@@ -45,6 +47,7 @@ class HKEnv(gym.Env):
         self.lives_info = None
 
         self.boss_targets = None
+        self._episode_frame_number = 0
 
         self._setup_windows()
 
@@ -72,8 +75,10 @@ class HKEnv(gym.Env):
         # info["life_loss"] = False
         self.boss_targets = {"Mantis Lord", "Mantis Lord S1", "Mantis Lord S2", "Mantis Lord S3"}
         self.lives_info = 9
+        self._episode_frame_number = 0
         info = {}
         info["lives"] = self.lives_info
+        info["episode_frame_number"] = self._episode_frame_number
         return obs, info  
     
 
@@ -111,7 +116,7 @@ class HKEnv(gym.Env):
                 if name in self.boss_targets and hp <= 0:
                     self.boss_targets.remove(name)
                     print(f"[Mantis] defeated: {name}, remaining targets: {len(self.boss_targets)}")
-            print(f"hit the boss, reward: {reward}")    
+            # print(f"hit the boss, reward: {reward}")    
 
         if events["damages"]:
             # print(f"damages: {events['damages']}")
@@ -119,9 +124,11 @@ class HKEnv(gym.Env):
             self.lives_info -= total_damage
             if self.lives_info < 0:
                 self.lives_info = 0
-            print(f"got damaged, damage this time: {total_damage}, lives: {self.lives_info}")
+            # print(f"got damaged, damage this time: {total_damage}, lives: {self.lives_info}")
             
         info["lives"] = self.lives_info
+        self._episode_frame_number += 1
+        info["episode_frame_number"] = self._episode_frame_number
 
         if self.lives_info == 0 or len(self.boss_targets) == 0:
             terminated = True
@@ -166,7 +173,7 @@ class HKEnv(gym.Env):
 
     def _enter_boss_room(self):
         """重新进入boss房间"""
-        print("正在重新进入boss房间...")
+        # print("正在重新进入boss房间...")
         time.sleep(1.0)
         
         # 1. 等待并寻找菜单界面
@@ -179,20 +186,21 @@ class HKEnv(gym.Env):
             # 检查是否到达了挑战界面
             frame = self._get_latest_frame()
             if self._is_challenge_menu(frame):
-                print("找到挑战菜单")
+                # print("找到挑战菜单")
                 break
             else:
-                print("未能找到挑战菜单，继续尝试...")
+                # print("未能找到挑战菜单，继续尝试...")
+                pass
         
         # 2. 按空格进入boss房
         keyboard.send('space')
-        print("按下空格键进入挑战...")
+        # print("按下空格键进入挑战...")
         time.sleep(1.0)
-        print("进入wait_for_loading时间")
+        # print("进入wait_for_loading时间")
         
         # 3. 等待加载完成
         self._wait_for_loading()
-        print("成功进入boss房间")
+        # print("成功进入boss房间")
     
     def _is_challenge_menu(self, frame, visualize=False):
 
@@ -210,7 +218,7 @@ class HKEnv(gym.Env):
         # 匹配判断
         res = cv2.matchTemplate(roi, template_gray, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
-        print(f"max_val: {max_val}")
+        # print(f"max_val: {max_val}")
 
         # 调试用
         if visualize:
@@ -224,7 +232,7 @@ class HKEnv(gym.Env):
     
     def _wait_for_loading(self):
         """等待游戏加载完成"""
-        print("等待加载...")
+        # print("等待加载...")
         ready = False
         
         while True:
@@ -248,7 +256,7 @@ class HKEnv(gym.Env):
         
         # 额外等待确保完全准备好
         time.sleep(2.0)
-        print("加载完成")
+        # print("加载完成")
 
     def _execute_actions(self, action):
         """执行动作"""
@@ -287,13 +295,7 @@ class HKEnv(gym.Env):
                 pass
             self.camera = None
     
-    def test_locate_menu(self):
-        frame = self._get_latest_frame()
-        value = self._is_challenge_menu(frame, visualize=False)
-        if value:
-            print("找到挑战菜单")
-        else:
-            print("未找到挑战菜单", value)
+
 
 if __name__ == "__main__":
     env = HKEnv()

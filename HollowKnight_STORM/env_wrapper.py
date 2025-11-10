@@ -68,6 +68,30 @@ class MaxLast2FrameSkipWrapper(gymnasium.Wrapper):
             obs = np.max(np.stack(self.obs_buffer), axis=0)
         return obs, total_reward, done, truncated, info
 
+
+class MultiBinaryToDiscreteWrapper(gymnasium.Wrapper):
+    """
+    Convert MultiBinary action space to Discrete for compatibility with existing agents.
+    Maps binary combinations to discrete indices (0 to 2^n - 1).
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        if isinstance(env.action_space, gymnasium.spaces.MultiBinary):
+            self.n = env.action_space.n
+            self.action_space = gymnasium.spaces.Discrete(2 ** self.n)
+            self._is_multibinary = True
+        else:
+            self._is_multibinary = False
+
+    def step(self, action):
+        if self._is_multibinary:
+            # Convert discrete action to binary
+            binary_action = np.array([(action >> i) & 1 for i in range(self.n)], dtype=np.int8)
+            return self.env.step(binary_action)
+        else:
+            return self.env.step(action)
+            
+
 def build_single_env(env_name, image_size):
     env = gymnasium.make(env_name, full_action_space=True, frameskip=1)
     from gymnasium.wrappers import AtariPreprocessing

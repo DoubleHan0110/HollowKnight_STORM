@@ -2,6 +2,7 @@
 import requests
 import threading
 import time
+import socket
 from typing import List, Dict, Optional
 from collections import deque
 from fastapi import FastAPI
@@ -27,6 +28,15 @@ class ModEventClient:
     
     def _start_server(self):
         """在后台线程启动 FastAPI 服务器"""
+        # Check if server is already running
+        try:
+            response = requests.get(f"{self.base_url}/get_events", params={"last_check_time": 0.0}, timeout=0.1)
+            if response.status_code == 200:
+                print("ModEventClient server already running, reusing existing server")
+                return
+        except:
+            pass  # Server not running, continue to start
+        
         app = FastAPI()
         
         # 事件队列
@@ -78,14 +88,20 @@ class ModEventClient:
         
         # 在后台线程启动服务器
         def run_server():
-            uvicorn.run(
-                app,
-                host="0.0.0.0",
-                port=9393,
-                log_level="warning",
-                access_log=False,
-                loop="asyncio"
-            )
+            try:
+                uvicorn.run(
+                    app,
+                    host="0.0.0.0",
+                    port=9393,
+                    log_level="warning",
+                    access_log=False,
+                    loop="asyncio"
+                )
+            except OSError as e:
+                if "address already in use" in str(e).lower() or "通常每个套接字地址" in str(e):
+                    print("ModEventClient server port 9393 already in use, reusing existing server")
+                else:
+                    raise
         
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()

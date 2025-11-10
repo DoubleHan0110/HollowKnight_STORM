@@ -23,12 +23,28 @@ import env_wrapper
 import agents
 from sub_models.functions_losses import symexp
 from sub_models.world_models import WorldModel, MSELoss
+import sys
+import os
+
+from HollowKnight_env.HKenv import HKEnv
 
 
 def build_single_env(env_name, image_size, seed):
-    env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
+    # Support HKenv (Hollow Knight custom environment)
+    if env_name == "HollowKnight" or env_name.startswith("HollowKnight"):
+        
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "HollowKnight_env"))
+        env = HKEnv()
+    else:
+        env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
+    
+    # Convert MultiBinary to Discrete if needed
+    env = env_wrapper.MultiBinaryToDiscreteWrapper(env)
     env = env_wrapper.SeedEnvWrapper(env, seed=seed)
-    env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=4)
+    # env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=4)
+    # Ensure image_size is a tuple for ResizeObservation
+    if isinstance(image_size, int):
+        image_size = (image_size, image_size)
     env = gymnasium.wrappers.ResizeObservation(env, shape=image_size)
     env = env_wrapper.LifeLossInfo(env)
     return env
@@ -127,7 +143,8 @@ def joint_train_world_model_agent(env_name, max_steps, num_envs, image_size,
             for i in range(num_envs):
                 if done_flag[i]:
                     logger.log(f"sample/{env_name}_reward", sum_reward[i])
-                    logger.log(f"sample/{env_name}_episode_steps", current_info["episode_frame_number"][i]//4)  # framskip=4
+                    # logger.log(f"sample/{env_name}_episode_steps", current_info["episode_frame_number"][i]//4)
+                    logger.log(f"sample/{env_name}_episode_steps", current_info["episode_frame_number"][i])  # framskip=4
                     logger.log("replay_buffer/length", len(replay_buffer))
                     sum_reward[i] = 0
 
@@ -237,8 +254,15 @@ if __name__ == "__main__":
     # distinguish between tasks, other debugging options are removed for simplicity
     if conf.Task == "JointTrainAgent":
         # getting action_dim with dummy env
-        dummy_env = build_single_env(args.env_name, conf.BasicSettings.ImageSize, seed=0)
-        action_dim = dummy_env.action_space.n
+        # For HKenv, avoid creating multiple environments (each creates ModEventClient server)
+        if args.env_name == "HollowKnight" or args.env_name.startswith("HollowKnight"):
+            # For HKenv, we know action_dim = 2^7 = 128 (MultiBinary(7) -> Discrete(128))
+            action_dim = 128
+        else:
+            dummy_env = build_single_env(args.env_name, conf.BasicSettings.ImageSize, seed=0)
+            # After MultiBinaryToDiscreteWrapper, action_space is always Discrete
+            action_dim = dummy_env.action_space.n
+            dummy_env.close()  # Close dummy env to free resources
 
         # build world model and agent
         world_model = build_world_model(conf, action_dim)

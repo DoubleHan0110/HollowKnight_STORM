@@ -1,6 +1,9 @@
 import time
 import numpy as np
-from HKenv import HKEnv
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from HollowKnight_env.HKenv import HKEnv
 
 def main():
     env = HKEnv()
