@@ -37,11 +37,12 @@ class ModEventClient:
         async def soul_gain(amount: int):
             return "OK"
         
-        @app.get("/hit/{entity_name}/{damage}")
-        async def hit(entity_name: str, damage: int):
+        @app.get("/hit/{entity_name}/{damage}/{remaining_hp}")
+        async def hit(entity_name: str, damage: int, remaining_hp: int):
             hit_events.append({
                 "entity": entity_name,
                 "damage": damage,
+                "remaining_hp": remaining_hp,
                 "time": time.time()
             })
             return "OK"
@@ -140,8 +141,10 @@ if __name__ == "__main__":
         events = mod_event_client.get_events_since_last_check()
         
         # 检查是否有实际事件（不是空列表）
-        if events["hits"] or events["damages"]:
-            print(f"收到事件: {events}")
+        if events["hits"]:
+            print(f"hits length: {len(events['hits'])}")
+            print(f"boss list: {events['hits'][0]['entity']}, remaining hp: {events['hits'][0]['remaining_hp']}")
+            mod_event_client._clear_events()
         elif len(events.get("hits", [])) == 0 and len(events.get("damages", [])) == 0:
             # 可以添加一个计数器，避免一直打印空消息
             pass

@@ -1,3 +1,4 @@
+from cv2.cuda import Event_DEFAULT
 import gymnasium as gym
 import pygetwindow as gw
 import dxcam
@@ -21,7 +22,7 @@ class HKEnv(gym.Env):
         self.menu_threshold = 0.43
         self.white_pixel_threshold = 500000
 
-        self.gap = 1.0 / 10
+        self.gap = 1.0 / 9.0
         self._prev_time = None
 
         self.KEYMAP = {
@@ -42,6 +43,8 @@ class HKEnv(gym.Env):
         self.action_space = gym.spaces.MultiBinary(self.num_actions)
 
         self.lives_info = None
+
+        self.boss_targets = None
 
         self._setup_windows()
 
@@ -67,6 +70,7 @@ class HKEnv(gym.Env):
         
         obs = self._get_latest_frame()
         # info["life_loss"] = False
+        self.boss_targets = {"Mantis Lord", "Mantis Lord S1", "Mantis Lord S2", "Mantis Lord S3"}
         self.lives_info = 9
         info = {}
         info["lives"] = self.lives_info
@@ -86,21 +90,31 @@ class HKEnv(gym.Env):
                 time.sleep(sleep_time)
         self._prev_time = time.time()
 
-        current_time = self._prev_time
-        print(f"current_time: {current_time}")
-        events = self.mod_event_client.get_events_since_last_check(current_time=current_time)
-
+        obs = self._get_latest_frame()
         reward = 0.0
         terminated = False
+        truncated = False
         info = {}
+
+        current_time = self._prev_time
+        # print(f"current_time: {current_time}")
+        events = self.mod_event_client.get_events_since_last_check(current_time=current_time)
+
 
         if events["hits"]:
             reward += 1
-            print(f"hits: {events['hits']}")
-            print(f"hit the boss, damage this time: {reward}")
+            # print(f"length of hits: {len(events['hits'])}")
+            for ev in events["hits"]:
+                name = ev.get("entity", "")
+                hp = ev.get("remaining_hp", 0)
+                # reward += 1
+                if name in self.boss_targets and hp <= 0:
+                    self.boss_targets.remove(name)
+                    print(f"[Mantis] defeated: {name}, remaining targets: {len(self.boss_targets)}")
+            print(f"hit the boss, reward: {reward}")    
 
         if events["damages"]:
-            print(f"damages: {events['damages']}")
+            # print(f"damages: {events['damages']}")
             total_damage = sum(event["damage"] for event in events["damages"])
             self.lives_info -= total_damage
             if self.lives_info < 0:
@@ -109,16 +123,12 @@ class HKEnv(gym.Env):
             
         info["lives"] = self.lives_info
 
-        if self.lives_info == 0:
+        if self.lives_info == 0 or len(self.boss_targets) == 0:
             terminated = True
-                
-        obs = self._get_latest_frame()
-
+        
         if terminated:
             self._wait_for_loading()
         
-        
-        truncated = False
         return obs, reward, terminated, truncated, info
 
     def _setup_windows(self):
@@ -164,7 +174,7 @@ class HKEnv(gym.Env):
         for attempt in range(max_attempts):
             # 尝试按w键导航到正确位置
             keyboard.send('w')
-            time.sleep(1.0)
+            time.sleep(1.5)
             
             # 检查是否到达了挑战界面
             frame = self._get_latest_frame()
@@ -289,7 +299,7 @@ if __name__ == "__main__":
     env = HKEnv()
     env = gym.wrappers.ResizeObservation(env, shape = (64, 64))
     env = LifeLossInfo(env)
-    episode =5
+    episode =2
     for i in range(episode):
         obs, info = env.reset()
         while True:
