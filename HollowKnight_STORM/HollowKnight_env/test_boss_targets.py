@@ -18,19 +18,19 @@ def main():
             action = np.zeros(env.num_actions, dtype=np.int8)
             obs, reward, terminated, truncated, info = env.step(action)
 
-            cur = set(env.boss_targets)
-            if cur != prev:
-                removed = prev - cur
-                if removed:
-                    print(f"[Boss 击破] 移除: {sorted(list(removed))} | 剩余: {len(cur)} -> {sorted(list(cur))}")
-                prev = cur
+            # cur = set(env.boss_targets)
+            # if cur != prev:
+            #     removed = prev - cur
+            #     if removed:
+            #         print(f"[Boss 击破] 移除: {sorted(list(removed))} | 剩余: {len(cur)} -> {sorted(list(cur))}")
+            #     prev = cur
 
             if terminated or truncated:
                 print(f"episode 结束, terminated={terminated}, truncated={truncated}")
                 break
 
             # 维持环境步频，避免占用过高
-            time.sleep(0.02)
+            # time.sleep(0.02)
     except KeyboardInterrupt:
         pass
 

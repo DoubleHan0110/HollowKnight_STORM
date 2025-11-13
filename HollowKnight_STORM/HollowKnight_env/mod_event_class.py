@@ -13,7 +13,7 @@ class ModEventClient:
     游戏事件客户端，用于从 FastAPI 服务器获取游戏事件
     """
     
-    def __init__(self, base_url: str = "http://localhost:9393", last_check_time: float = 0.0):
+    def __init__(self, base_url: str = "http://127.0.0.1:9393/", last_check_time: float = 0.0):
         """
         初始化游戏事件客户端
         
@@ -43,9 +43,9 @@ class ModEventClient:
         hit_events = deque(maxlen=500)
         damage_events = deque(maxlen=500)
         
-        @app.get("/soul_gain/{amount}")
-        async def soul_gain(amount: int):
-            return "OK"
+        # @app.get("/soul_gain/{amount}")
+        # async def soul_gain(amount: int):
+        #     return "OK"
         
         @app.get("/hit/{entity_name}/{damage}/{remaining_hp}")
         async def hit(entity_name: str, damage: int, remaining_hp: int):
@@ -91,7 +91,7 @@ class ModEventClient:
             try:
                 uvicorn.run(
                     app,
-                    host="0.0.0.0",
+                    host="127.0.0.1",
                     port=9393,
                     log_level="warning",
                     access_log=False,

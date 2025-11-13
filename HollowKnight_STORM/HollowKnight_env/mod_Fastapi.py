@@ -12,16 +12,18 @@ damage_events = deque(maxlen=100)  # 被打击事件
 
 @app.get("/soul_gain/{amount}")
 async def soul_gain(amount: int):
-    # 如果不需要灵魂变化，可以删除这个
+    # print(f"soul gain: {amount}")
     return "OK"
 
-@app.get("/hit/{entity_name}/{damage}")
-async def hit(entity_name: str, damage: int):
+@app.get("/hit/{entity_name}/{damage}/{remaining_hp}")
+async def hit(entity_name: str, damage: int, remaining_hp: int):
     hit_events.append({
         "entity": entity_name,
         "damage": damage,
+        "remaining_hp": remaining_hp,
         "time": time.time()
     })
+    print(f"hit {entity_name}, damage: {damage}, remaining hp: {remaining_hp}")
     return "OK"
 
 @app.get("/take_hit/{hazard_type}/{damage}")
@@ -31,6 +33,7 @@ async def take_hit(hazard_type: str, damage: int):
         "damage": damage,
         "time": time.time()
     })
+    print(f"got damaged")
     return "OK"
 
 # 新增：获取自上次查询以来的新事件（用于 gym env 的 step）
@@ -69,7 +72,7 @@ async def clear_events():
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host="0.0.0.0",
+        host="127.0.0.1",
         port=9393,
         log_level="warning",
         access_log=False,

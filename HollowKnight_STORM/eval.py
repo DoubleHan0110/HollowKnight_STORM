@@ -16,6 +16,7 @@ import json
 import shutil
 import pickle
 import os
+import sys
 
 from utils import seed_np_torch, Logger, load_config
 from replay_buffer import ReplayBuffer
@@ -23,6 +24,7 @@ import env_wrapper
 import agents
 from sub_models.functions_losses import symexp
 from sub_models.world_models import WorldModel, MSELoss
+from HollowKnight_env.HKenv import HKEnv
 
 
 def process_visualize(img):
@@ -32,31 +34,58 @@ def process_visualize(img):
     return img
 
 
-def build_single_env(env_name, image_size):
-    env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
-    env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=4)
+def build_single_env(env_name, image_size, seed=0):
+    # Support HKenv (Hollow Knight custom environment)
+    if env_name == "HollowKnight" or env_name.startswith("HollowKnight"):
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "HollowKnight_env"))
+        env = HKEnv()
+    else:
+        env = gymnasium.make(env_name, full_action_space=False, render_mode="rgb_array", frameskip=1)
+        env = env_wrapper.MaxLast2FrameSkipWrapper(env, skip=4)
+    
+    # Convert MultiBinary to Discrete if needed
+    env = env_wrapper.MultiBinaryToDiscreteWrapper(env)
+    env = env_wrapper.SeedEnvWrapper(env, seed=seed)
+    
+    if isinstance(image_size, int):
+        image_size = (image_size, image_size)
     env = gymnasium.wrappers.ResizeObservation(env, shape=image_size)
+    env = env_wrapper.LifeLossInfo(env)
     return env
 
 
-def build_vec_env(env_name, image_size, num_envs):
+def build_vec_env(env_name, image_size, num_envs, seed=0):
     # lambda pitfall refs to: https://python.plainenglish.io/python-pitfalls-with-variable-capture-dcfc113f39b7
-    def lambda_generator(env_name, image_size):
-        return lambda: build_single_env(env_name, image_size)
+    def lambda_generator(env_name, image_size, seed):
+        return lambda: build_single_env(env_name, image_size, seed)
     env_fns = []
-    env_fns = [lambda_generator(env_name, image_size) for i in range(num_envs)]
+    env_fns = [lambda_generator(env_name, image_size, seed + i) for i in range(num_envs)]
     vec_env = gymnasium.vector.AsyncVectorEnv(env_fns=env_fns)
     return vec_env
 
 
 def eval_episodes(num_episode, env_name, max_steps, num_envs, image_size,
-                  world_model: WorldModel, agent: agents.ActorCriticAgent):
+                  world_model: WorldModel, agent: agents.ActorCriticAgent, seed=0):
     world_model.eval()
     agent.eval()
-    vec_env = build_vec_env(env_name, image_size, num_envs=num_envs)
-    print("Current env: " + colorama.Fore.YELLOW + f"{env_name}" + colorama.Style.RESET_ALL)
-    sum_reward = np.zeros(num_envs)
-    current_obs, current_info = vec_env.reset()
+    
+    # For HKenv, only support single environment
+    is_hollowknight = env_name == "HollowKnight" or env_name.startswith("HollowKnight")
+    if is_hollowknight:
+        num_envs = 1
+        env = build_single_env(env_name, image_size, seed=seed)
+        print("Current env: " + colorama.Fore.YELLOW + f"{env_name} (single env mode)" + colorama.Style.RESET_ALL)
+    else:
+        env = build_vec_env(env_name, image_size, num_envs=num_envs, seed=seed)
+        print("Current env: " + colorama.Fore.YELLOW + f"{env_name}" + colorama.Style.RESET_ALL)
+    
+    sum_reward = 0.0
+    current_obs, current_info = env.reset()
+    
+    # Convert single env obs to batch format for consistency
+    if is_hollowknight:
+        current_obs = np.expand_dims(current_obs, axis=0)  # Add batch dimension
+    
     context_obs = deque(maxlen=16)
     context_action = deque(maxlen=16)
 
@@ -66,7 +95,11 @@ def eval_episodes(num_episode, env_name, max_steps, num_envs, image_size,
         # sample part >>>
         with torch.no_grad():
             if len(context_action) == 0:
-                action = vec_env.action_space.sample()
+                if is_hollowknight:
+                    action = env.action_space.sample()
+                    action = np.array([action])  # Add batch dimension
+                else:
+                    action = env.action_space.sample()
             else:
                 context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1))
                 model_context_action = np.stack(list(context_action), axis=1)
@@ -74,13 +107,22 @@ def eval_episodes(num_episode, env_name, max_steps, num_envs, image_size,
                 prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(context_latent, model_context_action)
                 action = agent.sample_as_env_action(
                     torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
-                    greedy=False
+                    greedy=True
                 )
 
         context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W")/255)
         context_action.append(action)
 
-        obs, reward, done, truncated, info = vec_env.step(action)
+        obs, reward, done, truncated, info = env.step(action[0] if is_hollowknight else action)
+        
+        # Convert single env results to batch format
+        if is_hollowknight:
+            obs = np.expand_dims(obs, axis=0)
+            reward = np.array([reward])
+            done = np.array([done])
+            truncated = np.array([truncated])
+            info = {k: np.array([v]) if not isinstance(v, dict) else v for k, v in info.items()}
+        
         # cv2.imshow("current_obs", process_visualize(obs[0]))
         # cv2.waitKey(10)
 
@@ -88,14 +130,27 @@ def eval_episodes(num_episode, env_name, max_steps, num_envs, image_size,
         if done_flag.any():
             for i in range(num_envs):
                 if done_flag[i]:
-                    final_rewards.append(sum_reward[i])
-                    sum_reward[i] = 0
+                    final_rewards.append(sum_reward if is_hollowknight else sum_reward[i])
+                    if is_hollowknight:
+                        sum_reward = 0.0
+                        # Reset environment for next episode
+                        current_obs, current_info = env.reset()
+                        current_obs = np.expand_dims(current_obs, axis=0)
+                        context_obs.clear()
+                        context_action.clear()
+                    else:
+                        sum_reward[i] = 0
                     if len(final_rewards) == num_episode:
                         print("Mean reward: " + colorama.Fore.YELLOW + f"{np.mean(final_rewards)}" + colorama.Style.RESET_ALL)
+                        if is_hollowknight:
+                            env.close()
                         return np.mean(final_rewards)
 
         # update current_obs, current_info and sum_reward
-        sum_reward += reward
+        if is_hollowknight:
+            sum_reward += reward[0]
+        else:
+            sum_reward += reward
         current_obs = obs
         current_info = info
         # <<< sample part
@@ -123,8 +178,16 @@ if __name__ == "__main__":
 
     # build and load model/agent
     import train
-    dummy_env = build_single_env(args.env_name, conf.BasicSettings.ImageSize)
-    action_dim = dummy_env.action_space.n
+    
+    # For HKenv, avoid creating multiple environments (each creates ModEventClient server)
+    if args.env_name == "HollowKnight" or args.env_name.startswith("HollowKnight"):
+        # For HKenv, we know action_dim = 2^7 = 128 (MultiBinary(7) -> Discrete(128))
+        action_dim = 128
+    else:
+        dummy_env = build_single_env(args.env_name, conf.BasicSettings.ImageSize, seed=0)
+        # After MultiBinaryToDiscreteWrapper, action_space is always Discrete
+        action_dim = dummy_env.action_space.n
+        dummy_env.close()  # Close dummy env to free resources
     world_model = train.build_world_model(conf, action_dim)
     agent = train.build_agent(conf, action_dim)
     root_path = f"ckpt/{args.run_name}"
@@ -133,23 +196,29 @@ if __name__ == "__main__":
     pathes = glob.glob(f"{root_path}/world_model_*.pth")
     steps = [int(path.split("_")[-1].split(".")[0]) for path in pathes]
     steps.sort()
-    steps = steps[-1:]
-    print(steps)
+    steps = steps[-1:]  # Only evaluate the latest checkpoint
+    print(f"Evaluating checkpoint at step: {steps}")
+    print(f"Model files: world_model_{steps[0]}.pth, agent_{steps[0]}.pth")
     results = []
     for step in tqdm(steps):
         world_model.load_state_dict(torch.load(f"{root_path}/world_model_{step}.pth"))
         agent.load_state_dict(torch.load(f"{root_path}/agent_{step}.pth"))
         # # eval
+        # For HKenv, use single environment; for others, use parallel environments
+        num_envs = 1 if (args.env_name == "HollowKnight" or args.env_name.startswith("HollowKnight")) else 5
         episode_avg_return = eval_episodes(
-            num_episode=20,
+            num_episode=5,
             env_name=args.env_name,
-            num_envs=5,
+            num_envs=num_envs,
             max_steps=conf.JointTrainAgent.SampleMaxSteps,
             image_size=conf.BasicSettings.ImageSize,
             world_model=world_model,
-            agent=agent
+            agent=agent,
+            seed=conf.BasicSettings.Seed
         )
         results.append([step, episode_avg_return])
+    # Create eval_result directory if it doesn't exist
+    os.makedirs("eval_result", exist_ok=True)
     with open(f"eval_result/{args.run_name}.csv", "w") as fout:
         fout.write("step, episode_avg_return\n")
         for step, episode_avg_return in results:

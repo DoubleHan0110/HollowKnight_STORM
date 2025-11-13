@@ -20,11 +20,13 @@ class HKEnv(gym.Env):
         self.window = None
         self.camera = None
 
+        self.process_time = 0.0
+
         # 菜单阈值
-        self.menu_threshold = 0.43
+        self.menu_threshold = 0.99
         self.white_pixel_threshold = 500000
 
-        self.gap = 1.0 / 9.0
+        self.gap = 1.0 / 10.0
         self._prev_time = None
 
         self.KEYMAP = {
@@ -72,7 +74,7 @@ class HKEnv(gym.Env):
         self.mod_event_client.reset(last_check_time=self._prev_time)
         
         obs = self._get_latest_frame()
-        # info["life_loss"] = False
+        
         self.boss_targets = {"Mantis Lord", "Mantis Lord S1", "Mantis Lord S2", "Mantis Lord S3"}
         self.lives_info = 9
         self._episode_frame_number = 0
@@ -85,15 +87,19 @@ class HKEnv(gym.Env):
 
     def step(self, action):
 
-
         self._execute_actions(action)
         # 控制采样频率
         if self._prev_time is not None:
             elapsed = time.time() - self._prev_time
             sleep_time = self.gap - elapsed
-            if sleep_time > 0:
+            if sleep_time > 0.0:
                 time.sleep(sleep_time)
+        process_gap = time.time() - self.process_time
+        print(f"process_gap: {process_gap}")
+
         self._prev_time = time.time()
+
+        self.process_time = time.time()   
 
         obs = self._get_latest_frame()
         reward = 0.0
@@ -107,15 +113,15 @@ class HKEnv(gym.Env):
 
 
         if events["hits"]:
-            reward += 1
+            # reward += 1
             # print(f"length of hits: {len(events['hits'])}")
             for ev in events["hits"]:
                 name = ev.get("entity", "")
                 hp = ev.get("remaining_hp", 0)
-                # reward += 1
+                reward += 1
                 if name in self.boss_targets and hp <= 0:
                     self.boss_targets.remove(name)
-                    print(f"[Mantis] defeated: {name}, remaining targets: {len(self.boss_targets)}")
+                    # print(f"[Mantis] defeated: {name}, remaining targets: {len(self.boss_targets)}")
             # print(f"hit the boss, reward: {reward}")    
 
         if events["damages"]:
@@ -135,7 +141,7 @@ class HKEnv(gym.Env):
         
         if terminated:
             self._wait_for_loading()
-        
+
         return obs, reward, terminated, truncated, info
 
     def _setup_windows(self):
@@ -178,19 +184,22 @@ class HKEnv(gym.Env):
         
         # 1. 等待并寻找菜单界面
         max_attempts = 10
+        found_menu = False
         for attempt in range(max_attempts):
             # 尝试按w键导航到正确位置
             keyboard.send('w')
-            time.sleep(1.5)
+            time.sleep(2.0)
             
             # 检查是否到达了挑战界面
-            frame = self._get_latest_frame()
-            if self._is_challenge_menu(frame):
-                # print("找到挑战菜单")
+            for attempt in range(2):
+                frame = self._get_latest_frame()
+                if self._is_challenge_menu(frame):
+                    # print("找到挑战菜单")
+                    found_menu = True
+                    break
+                time.sleep(0.5)
+            if found_menu:
                 break
-            else:
-                # print("未能找到挑战菜单，继续尝试...")
-                pass
         
         # 2. 按空格进入boss房
         keyboard.send('space')
@@ -211,7 +220,7 @@ class HKEnv(gym.Env):
         roi = gray[int(h * 0.05):int(h * 0.85), int(w * 0.40):w]
 
         BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-        TEMPLATE_PATH = os.path.join(BASE_DIR, "locate_fig", "menu_icon.png")
+        TEMPLATE_PATH = os.path.join(BASE_DIR, "locate_fig", "menu_icon2.png")
         template = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_COLOR)
         template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
 
@@ -299,19 +308,19 @@ class HKEnv(gym.Env):
 
 if __name__ == "__main__":
     env = HKEnv()
-    env = gym.wrappers.ResizeObservation(env, shape = (64, 64))
-    env = LifeLossInfo(env)
-    episode =2
-    for i in range(episode):
-        obs, info = env.reset()
-        while True:
-            action = env.action_space.sample()
-            obs, reward, terminated, truncated, info = env.step(action)
-            if terminated:
-                print(f"episode {i} terminated")
-                break
-            if truncated:
-                break
-        print(f"episode {i} finished")
+    # env = gym.wrappers.ResizeObservation(env, shape = (64, 64))
+    # env = LifeLossInfo(env)
+    # episode =2
+    # for i in range(episode):
+    #     obs, info = env.reset()
+    #     while True:
+    #         action = env.action_space.sample()
+    #         obs, reward, terminated, truncated, info = env.step(action)
+    #         if terminated:
+    #             print(f"episode {i} terminated")
+    #             break
+    #         if truncated:
+    #             break
+    #     print(f"episode {i} finished")
     # env.reset()
-    # env._is_challenge_menu(env._get_latest_frame())
+    env._is_challenge_menu(env._get_latest_frame())
