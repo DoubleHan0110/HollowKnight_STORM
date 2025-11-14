@@ -26,7 +26,7 @@ class HKEnv(gym.Env):
         self.menu_threshold = 0.99
         self.white_pixel_threshold = 500000
 
-        self.gap = 1.0 / 10.0
+        self.gap = 1.0 / 9.0
         self._prev_time = None
 
         self.KEYMAP = {
@@ -94,12 +94,12 @@ class HKEnv(gym.Env):
             sleep_time = self.gap - elapsed
             if sleep_time > 0.0:
                 time.sleep(sleep_time)
-        process_gap = time.time() - self.process_time
-        print(f"process_gap: {process_gap}")
+        # process_gap = time.time() - self.process_time
+        # print(f"process_gap: {process_gap}")
 
         self._prev_time = time.time()
 
-        self.process_time = time.time()   
+        # self.process_time = time.time()   
 
         obs = self._get_latest_frame()
         reward = 0.0
@@ -136,10 +136,14 @@ class HKEnv(gym.Env):
         self._episode_frame_number += 1
         info["episode_frame_number"] = self._episode_frame_number
 
+        if obs is None:
+            obs = np.zeros((self.window.height, self.window.width, 3), dtype=np.uint8)
+            truncated = True
+        
         if self.lives_info == 0 or len(self.boss_targets) == 0:
             terminated = True
         
-        if terminated:
+        if terminated or truncated:
             self._wait_for_loading()
 
         return obs, reward, terminated, truncated, info
@@ -171,8 +175,11 @@ class HKEnv(gym.Env):
             frame = self.camera.grab(region=region)
             if frame is not None:
                 break
-            time.sleep(0.01)
+            time.sleep(0.2)
             self.window.activate()
+        
+        if frame is None:
+            return None
 
         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         return frame
@@ -193,7 +200,7 @@ class HKEnv(gym.Env):
             # 检查是否到达了挑战界面
             for attempt in range(2):
                 frame = self._get_latest_frame()
-                if self._is_challenge_menu(frame):
+                if frame is not None and self._is_challenge_menu(frame):
                     # print("找到挑战菜单")
                     found_menu = True
                     break
@@ -201,13 +208,13 @@ class HKEnv(gym.Env):
             if found_menu:
                 break
         
-        # 2. 按空格进入boss房
+        # 进入boss房
         keyboard.send('space')
-        # print("按下空格键进入挑战...")
-        time.sleep(1.0)
-        # print("进入wait_for_loading时间")
         
-        # 3. 等待加载完成
+        time.sleep(1.0)
+        # print("进入wait_for_loading")
+        
+        # 等待加载完成
         self._wait_for_loading()
         # print("成功进入boss房间")
     
@@ -215,7 +222,7 @@ class HKEnv(gym.Env):
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # 可以只截取右上角区域来提速（菜单位置固定）
+        # 只截取右上角区域提速
         h, w = gray.shape
         roi = gray[int(h * 0.05):int(h * 0.85), int(w * 0.40):w]
 
@@ -243,18 +250,22 @@ class HKEnv(gym.Env):
         """等待游戏加载完成"""
         # print("等待加载...")
         ready = False
+        is_loading = False
         
         while True:
             frame = self._get_latest_frame()
             if frame is None:
-                continue
-                
-            # 检测是否在加载界面
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # print(f"num of gray > 250: {(gray > 250).sum()}")
+                print("报错：当前截屏失败，等待空格键继续：")
+                keyboard.wait('space')
 
-            # 判断白屏像素数量
-            is_loading = (gray > 250).sum() > self.white_pixel_threshold  
+                break
+            else:
+                # 检测是否在加载界面
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                # print(f"num of gray > 250: {(gray > 250).sum()}")
+
+                # 判断白屏像素数量
+                is_loading = (gray > 250).sum() > self.white_pixel_threshold  
             
             if ready and not is_loading:
                 break

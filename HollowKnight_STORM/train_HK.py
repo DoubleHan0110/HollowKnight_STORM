@@ -25,7 +25,7 @@ import env_wrapper
 import agents
 from sub_models.world_models import WorldModel
 from HollowKnight_env.HKenv import HKEnv
-
+import time
 
 def build_hk_env(image_size, seed):
     """
@@ -122,6 +122,10 @@ def train_hollowknight(max_steps, image_size,
     context_obs = deque(maxlen=16)
     context_action = deque(maxlen=16)
 
+    world_model_update_steps = 0
+    agent_update_steps = 0
+    last_save_steps = 0
+
     # 训练循环
     for total_steps in tqdm(range(max_steps), desc="Training"):
         # ========== 采样部分 ==========
@@ -163,15 +167,25 @@ def train_hollowknight(max_steps, image_size,
         obs, reward, done, truncated, info = env.step(action[0])
         
         # 转换回 batch 格式以便存储到 replay buffer
-        obs_batch = np.expand_dims(obs, axis=0)
+        obs_batch = current_obs
         reward_batch = np.array([reward])
         done_batch = np.array([done])
         info_batch = {k: np.array([v]) if not isinstance(v, dict) else v for k, v in info.items()}
+
+        next_obs_batch = np.expand_dims(obs, axis=0)
         
         # 存储到 replay buffer
         # 注意：replay_buffer.append 期望 batch 格式
         replay_buffer.append(obs_batch, action, reward_batch, 
                             np.logical_or(done_batch, info_batch["life_loss"]))
+        
+        
+        # update 更新步数
+        if replay_buffer.ready():
+            world_model_update_steps += 1 / train_dynamics_every_steps
+            agent_update_steps += 1 / train_agent_every_steps
+
+        
 
         # 检查是否结束
         done_flag = np.logical_or(done_batch, np.array([truncated]))
@@ -180,7 +194,66 @@ def train_hollowknight(max_steps, image_size,
             logger.log("sample/HollowKnight_reward", sum_reward)
             logger.log("sample/HollowKnight_episode_steps", current_info["episode_frame_number"])
             logger.log("replay_buffer/length", len(replay_buffer))
-            
+
+            if replay_buffer.ready():
+                # print(f"开始训练world model 和 agent")
+                # print(f"world_model_update_steps: {world_model_update_steps}, agent_update_steps: {agent_update_steps}")
+
+                # ========== 训练世界模型部分 ==========
+                while world_model_update_steps >= 1:
+                    train_world_model_step(
+                        replay_buffer=replay_buffer,
+                        world_model=world_model,
+                        batch_size=batch_size,
+                        demonstration_batch_size=demonstration_batch_size,
+                        batch_length=batch_length,
+                        logger=logger
+                    )
+                    world_model_update_steps -= 1
+                # ========== 训练世界模型部分结束 ==========
+
+                # ========== 训练智能体部分 ==========
+                has_logged_video = False
+                while agent_update_steps >= 1:
+                    # 决定是否记录视频（仅在保存检查点时记录）
+                    if not has_logged_video and total_steps - last_save_steps >= save_every_steps:
+                        log_video = True
+                        has_logged_video = True
+                    else:
+                        log_video = False
+
+                    # 生成想象数据
+                    imagine_latent, agent_action, agent_logprob, agent_value, imagine_reward, imagine_termination = \
+                        world_model_imagine_data(
+                            replay_buffer=replay_buffer,
+                            world_model=world_model,
+                            agent=agent,
+                            imagine_batch_size=imagine_batch_size,
+                            imagine_demonstration_batch_size=imagine_demonstration_batch_size,
+                            imagine_context_length=imagine_context_length,
+                            imagine_batch_length=imagine_batch_length,
+                            log_video=log_video,
+                            logger=logger
+                        )
+
+                    # 更新智能体
+                    agent.update(
+                        latent=imagine_latent,
+                        action=agent_action,
+                        old_logprob=agent_logprob,
+                        old_value=agent_value,
+                        reward=imagine_reward,
+                        termination=imagine_termination,
+                        logger=logger
+                    )
+                    agent_update_steps -= 1
+                # ========== 训练智能体部分结束 ==========
+            # ========== 保存模型 ==========
+            if total_steps - last_save_steps >= save_every_steps and total_steps > 0:
+                print(colorama.Fore.GREEN + f"Saving model at step {total_steps}" + colorama.Style.RESET_ALL)
+                torch.save(world_model.state_dict(), f"ckpt/{run_name}/world_model_{total_steps}.pth")
+                torch.save(agent.state_dict(), f"ckpt/{run_name}/agent_{total_steps}.pth")
+                last_save_steps = total_steps
             # 重置环境
             sum_reward = 0.0
             current_obs, current_info = env.reset()
@@ -191,61 +264,11 @@ def train_hollowknight(max_steps, image_size,
         else:
             # 更新当前状态
             sum_reward += reward
-            current_obs = obs_batch
+            current_obs = next_obs_batch
             current_info = info_batch
-        # ========== 采样部分结束 ==========
 
-        # ========== 训练世界模型部分 ==========
-        if replay_buffer.ready() and total_steps % train_dynamics_every_steps == 0:
-            train_world_model_step(
-                replay_buffer=replay_buffer,
-                world_model=world_model,
-                batch_size=batch_size,
-                demonstration_batch_size=demonstration_batch_size,
-                batch_length=batch_length,
-                logger=logger
-            )
-        # ========== 训练世界模型部分结束 ==========
-
-        # ========== 训练智能体部分 ==========
-        if replay_buffer.ready() and total_steps % train_agent_every_steps == 0:
-            # 决定是否记录视频（仅在保存检查点时记录）
-            if total_steps % save_every_steps == 0:
-                log_video = True
-            else:
-                log_video = False
-
-            # 生成想象数据
-            imagine_latent, agent_action, agent_logprob, agent_value, imagine_reward, imagine_termination = \
-                world_model_imagine_data(
-                    replay_buffer=replay_buffer,
-                    world_model=world_model,
-                    agent=agent,
-                    imagine_batch_size=imagine_batch_size,
-                    imagine_demonstration_batch_size=imagine_demonstration_batch_size,
-                    imagine_context_length=imagine_context_length,
-                    imagine_batch_length=imagine_batch_length,
-                    log_video=log_video,
-                    logger=logger
-                )
-
-            # 更新智能体
-            agent.update(
-                latent=imagine_latent,
-                action=agent_action,
-                old_logprob=agent_logprob,
-                old_value=agent_value,
-                reward=imagine_reward,
-                termination=imagine_termination,
-                logger=logger
-            )
-        # ========== 训练智能体部分结束 ==========
-
-        # ========== 保存模型 ==========
-        if total_steps % save_every_steps == 0 and total_steps > 0:
-            print(colorama.Fore.GREEN + f"Saving model at step {total_steps}" + colorama.Style.RESET_ALL)
-            torch.save(world_model.state_dict(), f"ckpt/{run_name}/world_model_{total_steps}.pth")
-            torch.save(agent.state_dict(), f"ckpt/{run_name}/agent_{total_steps}.pth")
+        
+        
         # ========== 保存模型结束 ==========
 
     # 训练结束，关闭环境
