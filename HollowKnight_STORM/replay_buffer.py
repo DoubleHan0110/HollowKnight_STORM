@@ -122,5 +122,64 @@ class ReplayBuffer():
         if len(self) < self.max_length:
             self.length += 1
 
+    def save_to_file(self, path: str):
+        """把当前 replay buffer 存到一个文件里（严格续训用）"""
+        if self.store_on_gpu:
+            # 从 GPU 拷回 CPU 再存
+            obs = self.obs_buffer.detach().cpu().numpy()
+            action = self.action_buffer.detach().cpu().numpy()
+            reward = self.reward_buffer.detach().cpu().numpy()
+            termination = self.termination_buffer.detach().cpu().numpy()
+        else:
+            obs = self.obs_buffer
+            action = self.action_buffer
+            reward = self.reward_buffer
+            termination = self.termination_buffer
+
+        data = {
+            "obs": obs,
+            "action": action,
+            "reward": reward,
+            "termination": termination,
+            "length": self.length,
+            "last_pointer": self.last_pointer,
+            "num_envs": self.num_envs,
+            "max_length": self.max_length,
+            "warmup_length": self.warmup_length,
+            "store_on_gpu": self.store_on_gpu,
+        }
+        # external_buffer 这一块建议还是走你原来的 load_trajectory 逻辑，
+        # 这里就不重复存了（否则文件会非常大）
+
+        with open(path, "wb") as f:
+            pickle.dump(data, f)
+
+    def load_from_file(self, path: str):
+        """从文件恢复 replay buffer（要求构造时 max_length/num_envs 一致）"""
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+
+        assert data["num_envs"] == self.num_envs
+        assert data["max_length"] == self.max_length
+
+        self.length = data["length"]
+        self.last_pointer = data["last_pointer"]
+
+        obs_data = data["obs"]
+        action_data = data["action"]
+        reward_data = data["reward"]
+        termination_data = data["termination"]
+
+        if self.store_on_gpu:
+            self.obs_buffer[:] = torch.from_numpy(obs_data).to("cuda")
+            self.action_buffer[:] = torch.from_numpy(action_data).to("cuda")
+            self.reward_buffer[:] = torch.from_numpy(reward_data).to("cuda")
+            self.termination_buffer[:] = torch.from_numpy(termination_data).to("cuda")
+        else:
+            self.obs_buffer[:] = obs_data
+            self.action_buffer[:] = action_data
+            self.reward_buffer[:] = reward_data
+            self.termination_buffer[:] = termination_data
+
     def __len__(self):
         return self.length * self.num_envs

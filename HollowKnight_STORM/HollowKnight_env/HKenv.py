@@ -34,8 +34,8 @@ class HKEnv(gym.Env):
             1: ('d', 'move_right', 'hold'),     # 按住右
             2: ('w', 'look_up', 'hold'),        # 按住上（向上看）
             3: ('s', 'look_down', 'hold'),     # 按住下（向下看）
-            4: ('j', 'attack', 'instant'),     # 攻击（瞬时动作）
-            5: ('k', 'dash', 'instant'),        # 冲刺（瞬时动作）
+            4: ('j', 'attack', 'instant'),     # 攻击（瞬间）
+            5: ('k', 'dash', 'instant'),        # 冲刺（瞬间）
             6: ('space', 'jump', 'hold'),       # 跳跃（按住）
         }
         self.action_keys = [self.KEYMAP[i][0] for i in range(len(self.KEYMAP))]
@@ -63,7 +63,6 @@ class HKEnv(gym.Env):
         """重置环境，重新进入boss房间"""
         super().reset(seed=seed)
 
-        # 清理按键
         self._cleanup_keys()
         
         # 重新进入boss房间
@@ -149,7 +148,7 @@ class HKEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def _setup_windows(self):
-        """初始化窗口和摄像头"""
+        """初始化窗口和camera"""
         # 查找空洞骑士窗口
         windows = gw.getWindowsWithTitle("Hollow Knight")
         self.window = windows[0]
@@ -189,15 +188,13 @@ class HKEnv(gym.Env):
         # print("正在重新进入boss房间...")
         time.sleep(1.0)
         
-        # 1. 等待并寻找菜单界面
         max_attempts = 10
         found_menu = False
         for attempt in range(max_attempts):
-            # 尝试按w键导航到正确位置
             keyboard.send('w')
             time.sleep(2.0)
             
-            # 检查是否到达了挑战界面
+            # 查看是否达到挑战菜单
             for attempt in range(2):
                 frame = self._get_latest_frame()
                 if frame is not None and self._is_challenge_menu(frame):
@@ -222,7 +219,7 @@ class HKEnv(gym.Env):
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # 只截取右上角区域提速
+        # 只截取右上角区域
         h, w = gray.shape
         roi = gray[int(h * 0.05):int(h * 0.85), int(w * 0.40):w]
 
@@ -231,7 +228,6 @@ class HKEnv(gym.Env):
         template = cv2.imread(TEMPLATE_PATH, cv2.IMREAD_COLOR)
         template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
 
-        # 匹配判断
         res = cv2.matchTemplate(roi, template_gray, cv2.TM_CCOEFF_NORMED)
         _, max_val, _, max_loc = cv2.minMaxLoc(res)
         # print(f"max_val: {max_val}")
@@ -239,7 +235,6 @@ class HKEnv(gym.Env):
         # 调试用
         if visualize:
             cv2.imshow("template_gray", template_gray)
-            # 显示ROI区域
             cv2.imshow("ROI区域 (右上角)", roi)
             cv2.waitKey(20000)
 

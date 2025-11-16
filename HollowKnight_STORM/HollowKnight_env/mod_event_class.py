@@ -28,14 +28,14 @@ class ModEventClient:
     
     def _start_server(self):
         """在后台线程启动 FastAPI 服务器"""
-        # Check if server is already running
+        # 避免重复启动服务器
         try:
             response = requests.get(f"{self.base_url}/get_events", params={"last_check_time": 0.0}, timeout=0.1)
             if response.status_code == 200:
                 print("ModEventClient server already running, reusing existing server")
                 return
         except:
-            pass  # Server not running, continue to start
+            pass  
         
         app = FastAPI()
         
@@ -86,7 +86,7 @@ class ModEventClient:
             damage_events.clear()
             return "OK"
         
-        # 在后台线程启动服务器
+        # 后台启动服务器
         def run_server():
             try:
                 uvicorn.run(
@@ -105,11 +105,11 @@ class ModEventClient:
         
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
-        time.sleep(1)  # 等待服务器启动
+        time.sleep(1) 
     
     def get_events_since_last_check(self, current_time: float = None) -> Dict:
         """
-        获取自上次检查以来的新事件
+        获取自上次check以来的新事件
         
         :return: 包含 hits 和 damages 的字典
         """

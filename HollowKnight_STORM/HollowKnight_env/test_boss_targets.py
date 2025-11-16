@@ -11,12 +11,18 @@ def main():
     print(f"初始 targets: {sorted(env.boss_targets)} (共 {len(env.boss_targets)} 个)")
 
     prev = set(env.boss_targets)
+    reward_sum = 0
+    new_reward_sum = 0
 
     try:
         while True:
-            # 空动作，不干扰你的手动操作
+            # 空动作
             action = np.zeros(env.num_actions, dtype=np.int8)
             obs, reward, terminated, truncated, info = env.step(action)
+            new_reward_sum += reward
+            if new_reward_sum > reward_sum:
+                reward_sum = new_reward_sum
+                print(f"reward_sum: {reward_sum}")
 
             # cur = set(env.boss_targets)
             # if cur != prev:
@@ -27,10 +33,9 @@ def main():
 
             if terminated or truncated:
                 print(f"episode 结束, terminated={terminated}, truncated={truncated}")
+                print(f"reward_sum: {reward_sum}")
                 break
 
-            # 维持环境步频，避免占用过高
-            # time.sleep(0.02)
     except KeyboardInterrupt:
         pass
 

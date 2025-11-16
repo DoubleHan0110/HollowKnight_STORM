@@ -1,10 +1,6 @@
 """
 HollowKnight 环境专用训练脚本
 
-注意：
-1. HollowKnight 环境只能单个运行，不支持并行环境
-2. 环境构建方式与 eval_HK.py 保持一致，确保训练和评估表现一致
-3. 不使用 MaxLast2FrameSkipWrapper
 """
 
 import gymnasium
@@ -26,7 +22,7 @@ import agents
 from sub_models.world_models import WorldModel
 from HollowKnight_env.HKenv import HKEnv
 import time
-
+import pickle
 def build_hk_env(image_size, seed):
     """
     构建 HollowKnight 环境
@@ -99,7 +95,10 @@ def train_hollowknight(max_steps, image_size,
                        save_every_steps, 
                        seed, 
                        logger,
-                       run_name):
+                       run_name,
+                       start_step=0,
+                       init_world_model_update_steps=0.0,
+                       init_agent_update_steps=0.0):
     """
     训练 HollowKnight 环境的主循环
     
@@ -124,10 +123,14 @@ def train_hollowknight(max_steps, image_size,
 
     world_model_update_steps = 0
     agent_update_steps = 0
-    last_save_steps = 0
+    whether_save_model = False
+
+    world_model_update_steps = init_world_model_update_steps
+    agent_update_steps = init_agent_update_steps
 
     # 训练循环
-    for total_steps in tqdm(range(max_steps), desc="Training"):
+    pbar = tqdm(total=max_steps, initial=start_step, desc="Training")
+    for total_steps in range(start_step, max_steps):
         # ========== 采样部分 ==========
         if replay_buffer.ready():
             # 如果 replay buffer 已准备好，使用模型生成动作
@@ -140,22 +143,21 @@ def train_hollowknight(max_steps, image_size,
                     action = np.array([action])  # 添加 batch 维度
                 else:
                     # 使用 world model 和 agent 生成动作
-                    # 编码上下文观测
                     context_latent = world_model.encode_obs(torch.cat(list(context_obs), dim=1))
-                    # 准备上下文动作
+                    
                     model_context_action = np.stack(list(context_action), axis=1)
                     model_context_action = torch.Tensor(model_context_action).cuda()
-                    # 计算特征
+                    
                     prior_flattened_sample, last_dist_feat = world_model.calc_last_dist_feat(
                         context_latent, model_context_action
                     )
-                    # 采样动作
+                    
                     action = agent.sample_as_env_action(
                         torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
                         greedy=False
                     )
 
-            # 更新上下文（添加 batch 维度）
+            # 添加 batch 维度
             context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W") / 255)
             context_action.append(action)
         else:
@@ -182,11 +184,14 @@ def train_hollowknight(max_steps, image_size,
         
         # update 更新步数
         if replay_buffer.ready():
-            world_model_update_steps += 1 / train_dynamics_every_steps
+            world_model_update_steps += 2 / train_dynamics_every_steps
             agent_update_steps += 1 / train_agent_every_steps
 
-        
+        if total_steps % save_every_steps == 0 and total_steps > 0:
+            whether_save_model = True
 
+        sum_reward += reward
+        pbar.update(1)
         # 检查是否结束
         done_flag = np.logical_or(done_batch, np.array([truncated]))
         if done_flag.any():
@@ -216,7 +221,7 @@ def train_hollowknight(max_steps, image_size,
                 has_logged_video = False
                 while agent_update_steps >= 1:
                     # 决定是否记录视频（仅在保存检查点时记录）
-                    if not has_logged_video and total_steps - last_save_steps >= save_every_steps:
+                    if not has_logged_video and whether_save_model:
                         log_video = True
                         has_logged_video = True
                     else:
@@ -249,11 +254,27 @@ def train_hollowknight(max_steps, image_size,
                     agent_update_steps -= 1
                 # ========== 训练智能体部分结束 ==========
             # ========== 保存模型 ==========
-            if total_steps - last_save_steps >= save_every_steps and total_steps > 0:
+            if whether_save_model:
                 print(colorama.Fore.GREEN + f"Saving model at step {total_steps}" + colorama.Style.RESET_ALL)
                 torch.save(world_model.state_dict(), f"ckpt/{run_name}/world_model_{total_steps}.pth")
                 torch.save(agent.state_dict(), f"ckpt/{run_name}/agent_{total_steps}.pth")
-                last_save_steps = total_steps
+
+                replay_buffer.save_to_file(f"ckpt/{run_name}/replay_buffer_{total_steps}.pkl")
+
+                # 保存训练状态
+                train_state = {
+                    "total_steps": total_steps + 1,  
+                    "world_model_update_steps": world_model_update_steps,
+                    "agent_update_steps": agent_update_steps,
+                    "logger_tag_step": logger.tag_step, 
+                }
+                
+                with open(f"ckpt/{run_name}/train_state_{total_steps}.pkl", "wb") as f:
+                    pickle.dump(train_state, f)
+
+                whether_save_model = False
+
+
             # 重置环境
             sum_reward = 0.0
             current_obs, current_info = env.reset()
@@ -263,13 +284,10 @@ def train_hollowknight(max_steps, image_size,
             context_action.clear()
         else:
             # 更新当前状态
-            sum_reward += reward
+            
             current_obs = next_obs_batch
             current_info = info_batch
 
-        
-        
-        # ========== 保存模型结束 ==========
 
     # 训练结束，关闭环境
     env.close()
@@ -277,7 +295,7 @@ def train_hollowknight(max_steps, image_size,
 
 
 def build_world_model(conf, action_dim):
-    """构建世界模型"""
+    """构建world model"""
     return WorldModel(
         in_channels=conf.Models.WorldModel.InChannels,
         action_dim=action_dim,
@@ -289,7 +307,7 @@ def build_world_model(conf, action_dim):
 
 
 def build_agent(conf, action_dim):
-    """构建智能体"""
+    """构建agent"""
     return agents.ActorCriticAgent(
         feat_dim=32*32 + conf.Models.WorldModel.TransformerHiddenDim,
         num_layers=conf.Models.Agent.NumLayers,
@@ -314,6 +332,11 @@ if __name__ == "__main__":
     parser.add_argument("-seed", type=int, required=True, help="Random seed")
     parser.add_argument("-config_path", type=str, required=True, help="Path to config YAML file")
     parser.add_argument("-trajectory_path", type=str, required=True, help="Path to demonstration trajectory (if using)")
+
+    parser.add_argument("-resume_step", type=int, default=None,
+                        help="If set, strictly resume from this step: load model, replay buffer and train state.")
+    parser.add_argument("-no_resume_buffer", action="store_true",
+                        help="If set, do NOT load replay buffer even when resume_step is given.")
     args = parser.parse_args()
     
     # 加载配置
@@ -359,6 +382,53 @@ if __name__ == "__main__":
                   colorama.Style.RESET_ALL)
             replay_buffer.load_trajectory(path=args.trajectory_path)
             print(colorama.Fore.MAGENTA + "Demonstration trajectory loaded!" + colorama.Style.RESET_ALL)
+        
+        start_step = 0
+        init_wm_updates = 0.0
+        init_agent_updates = 0.0
+
+        if args.resume_step is not None:
+            ckpt_dir = os.path.join("ckpt", args.n)
+            step = args.resume_step
+
+            # 1. 加载 world model / agent 权重
+            wm_path = os.path.join(ckpt_dir, f"world_model_{step}.pth")
+            agent_path = os.path.join(ckpt_dir, f"agent_{step}.pth")
+
+            if os.path.exists(wm_path):
+                print(colorama.Fore.GREEN + f"[Resume] Loading world model from {wm_path}" + colorama.Style.RESET_ALL)
+                world_model.load_state_dict(torch.load(wm_path, map_location="cuda"))
+            else:
+                print(colorama.Fore.RED + f"[Resume] World model checkpoint not found: {wm_path}" + colorama.Style.RESET_ALL)
+
+            if os.path.exists(agent_path):
+                print(colorama.Fore.GREEN + f"[Resume] Loading agent from {agent_path}" + colorama.Style.RESET_ALL)
+                agent.load_state_dict(torch.load(agent_path, map_location="cuda"))
+            else:
+                print(colorama.Fore.RED + f"[Resume] Agent checkpoint not found: {agent_path}" + colorama.Style.RESET_ALL)
+
+            # 2. 恢复 replay buffer（除非 --no_resume_buffer）
+            if not args.no_resume_buffer:
+                rb_path = os.path.join(ckpt_dir, f"replay_buffer_{step}.pkl")
+                if os.path.exists(rb_path):
+                    print(colorama.Fore.GREEN + f"[Resume] Loading replay buffer from {rb_path}" + colorama.Style.RESET_ALL)
+                    replay_buffer.load_from_file(rb_path)
+                else:
+                    print(colorama.Fore.RED + f"[Resume] Replay buffer file not found: {rb_path}" + colorama.Style.RESET_ALL)
+
+            # 3. 恢复训练进度（total_steps 和 update 计数器）
+            state_path = os.path.join(ckpt_dir, f"train_state_{step}.pkl")
+            if os.path.exists(state_path):
+                with open(state_path, "rb") as f:
+                    train_state = pickle.load(f)
+                start_step = train_state.get("total_steps", step + 1)
+                init_wm_updates = train_state.get("world_model_update_steps", 0.0)
+                init_agent_updates = train_state.get("agent_update_steps", 0.0)
+                logger.tag_step = train_state.get("logger_tag_step", {})
+                print(colorama.Fore.GREEN + f"[Resume] Training will continue from step {start_step}" + colorama.Style.RESET_ALL)
+            else:
+                print(colorama.Fore.RED + f"[Resume] Train state file not found: {state_path}" + colorama.Style.RESET_ALL)
+                start_step = step + 1
 
         # 开始训练
         print(colorama.Fore.CYAN + "Starting training..." + colorama.Style.RESET_ALL)
@@ -380,7 +450,10 @@ if __name__ == "__main__":
             save_every_steps=conf.JointTrainAgent.SaveEverySteps,
             seed=args.seed,
             logger=logger,
-            run_name=args.n
+            run_name=args.n,
+            start_step=start_step,
+            init_world_model_update_steps=init_wm_updates,
+            init_agent_update_steps=init_agent_updates
         )
     else:
         raise NotImplementedError(f"Task {conf.Task} not implemented")

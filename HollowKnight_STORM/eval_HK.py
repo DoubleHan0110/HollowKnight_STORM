@@ -67,7 +67,7 @@ def eval_episodes(num_episode, image_size, world_model: WorldModel,
                 )
                 action = agent.sample_as_env_action(
                     torch.cat([prior_flattened_sample, last_dist_feat], dim=-1),
-                    greedy=False  # 评估时使用贪婪策略
+                    greedy=True  # 评估时使用贪婪策略
                 )
         
         context_obs.append(rearrange(torch.Tensor(current_obs).cuda(), "B H W C -> B 1 C H W")/255)
@@ -81,6 +81,8 @@ def eval_episodes(num_episode, image_size, world_model: WorldModel,
         done = np.array([done])
         truncated = np.array([truncated])
         info = {k: np.array([v]) if not isinstance(v, dict) else v for k, v in info.items()}
+
+        sum_reward += reward[0]
         
         done_flag = np.logical_or(done, truncated)
         if done_flag.any():
@@ -99,7 +101,6 @@ def eval_episodes(num_episode, image_size, world_model: WorldModel,
                 break
         
         # Update state
-        sum_reward += reward[0]
         current_obs = obs
         current_info = info
     
