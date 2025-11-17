@@ -143,6 +143,7 @@ class HKEnv(gym.Env):
             terminated = True
         
         if terminated or truncated:
+            self._cleanup_keys()
             self._wait_for_loading()
 
         return obs, reward, terminated, truncated, info
